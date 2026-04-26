@@ -1,0 +1,1306 @@
+<!DOCTYPE html><html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>변기에 넣고 내려라</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #141824;
+      color: white;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      user-select: none;
+      touch-action: none;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      background: linear-gradient(#252c3a, #10141d);
+      touch-action: none;
+    }
+    #topbar {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 100%;
+      padding: 8px 10px;
+      display: flex;
+      justify-content: space-between;
+      gap: 6px;
+      z-index: 2;
+      pointer-events: none;
+      font-size: 14px;
+    }
+    .panel {
+      background: rgba(0,0,0,0.45);
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 12px;
+      padding: 7px 9px;
+      backdrop-filter: blur(5px);
+    }
+    #musicBtn {
+      position: fixed;
+      right: 10px;
+      bottom: 54px;
+      z-index: 3;
+      border: 1px solid rgba(255,255,255,0.25);
+      background: rgba(0,0,0,0.48);
+      color: white;
+      border-radius: 14px;
+      padding: 9px 12px;
+      font-size: 13px;
+      touch-action: manipulation;
+    }
+  </style>
+</head>
+<body>
+  <div id="topbar">
+    <div class="panel">점수 <b id="score">0</b> / 시간 <b id="time">90</b> / 콤보 <b id="combo">0</b></div>
+    <div class="panel">간격 <b id="interval">2.00</b>초 / 보관 <b id="stored">0</b> / 최고 <b id="best">0</b></div>
+  </div><button id="musicBtn">음악 OFF</button> <canvas id="game"></canvas>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const musicBtn = document.getElementById("musicBtn");
+
+const ui = {
+  score: document.getElementById("score"),
+  time: document.getElementById("time"),
+  combo: document.getElementById("combo"),
+  interval: document.getElementById("interval"),
+  stored: document.getElementById("stored"),
+  best: document.getElementById("best")
+};
+
+/*
+파일 효과음/음악 이름 규칙
+같은 폴더에 넣으면 자동 사용됩니다. 없으면 조용히 넘어가거나 기본 생성 효과음이 재생됩니다.
+
+bgm.mp3          게임 중 배경음악
+bgm_result.mp3   이름 입력/결과 화면 배경음악
+sfx_spawn.mp3    오브젝트 등장
+sfx_grab.mp3     잡기
+sfx_compress.mp3 압축
+sfx_enter.mp3    변기에 들어감
+sfx_flush.mp3    물내림
+sfx_clog.mp3     막힘
+sfx_miss.mp3     놓침
+sfx_combo.mp3    콤보
+sfx_rare.mp3     레어
+*/
+const audioFiles = {
+  bgm: "bgm.mp3",
+  resultBgm: "bgm_result.mp3",
+  spawn: "sfx_spawn.mp3",
+  grab: "sfx_grab.mp3",
+  compress: "sfx_compress.mp3",
+  enter: "sfx_enter.mp3",
+  flush: "sfx_flush.mp3",
+  clog: "sfx_clog.mp3",
+  miss: "sfx_miss.mp3",
+  combo: "sfx_combo.mp3",
+  rare: "sfx_rare.mp3"
+};
+
+const sounds = {};
+let audioUnlocked = false;
+
+function loadSounds() {
+  for (const key in audioFiles) {
+    const audio = new Audio(audioFiles[key]);
+    audio.preload = "auto";
+    audio.volume = (key === "bgm" || key === "resultBgm") ? 0.38 : 0.55;
+    audio.addEventListener("error", () => {
+      sounds[key] = null;
+    });
+    sounds[key] = audio;
+  }
+}
+
+let W = 0;
+let H = 0;
+let DPR = 1;
+
+const RANK_KEY = "toilet_flush_rank_v_english_name";
+const BEST_KEY = "toilet_flush_best_v_english_name";
+const DISCOVER_KEY = "toilet_flush_discovered_v_english_name";
+
+const toilet = {
+  x: 0,
+  y: 0,
+  w: 150,
+  h: 132,
+  drainX: 0,
+  drainY: 0,
+  wallR: 108,
+  inletR: 48,
+  stored: [],
+  flushPulse: 0,
+  cloggedFlash: 0
+};
+
+let encyclopediaOpen = false;
+let discovered = {};
+
+const objectTypes = [
+  { name: "휴지심", w: 46, h: 46, mass: 0.7, points: 8, color: "#f1e8d7", rarity: 35, difficulty: 0 },
+  { name: "바나나", w: 78, h: 35, mass: 0.8, points: 11, color: "#ffe066", rarity: 25, difficulty: 1 },
+  { name: "리모컨", w: 86, h: 34, mass: 1.0, points: 13, color: "#30343f", rarity: 20, difficulty: 1 },
+  { name: "키보드", w: 130, h: 45, mass: 1.5, points: 19, color: "#cad2e2", rarity: 16, difficulty: 2 },
+  { name: "수박", w: 82, h: 82, mass: 2.0, points: 22, color: "#62c370", rarity: 12, difficulty: 2 },
+  { name: "기타", w: 150, h: 48, mass: 1.8, points: 27, color: "#c58c55", rarity: 9, difficulty: 3 },
+  { name: "전자레인지", w: 135, h: 80, mass: 2.5, points: 34, color: "#b8bcc7", rarity: 7, difficulty: 3 },
+  { name: "피아노", w: 190, h: 78, mass: 3.3, points: 48, color: "#1e1f26", rarity: 4, difficulty: 4 },
+  { name: "소형 행성", w: 105, h: 105, mass: 2.8, points: 65, color: "#8ecae6", rarity: 2, difficulty: 5, rare: true, trick: "spin" },
+  { name: "금 변기뚜껑", w: 150, h: 52, mass: 2.7, points: 72, color: "#ffd166", rarity: 2, difficulty: 5, rare: true, trick: "slip" },
+  { name: "초거대 만두", w: 160, h: 115, mass: 3.0, points: 90, color: "#eee1c6", rarity: 1, difficulty: 6, rare: true, trick: "inflate" }
+];
+
+const nameLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+
+let mode = "game";
+let score = 0;
+let time = 90;
+let combo = 0;
+let spawnCooldown = 0;
+let objects = [];
+let pointer = null;
+let particles = [];
+let lastT = performance.now();
+let comboBanner = 0;
+let comboGlow = 0;
+let gameOverScore = 0;
+
+let nameInput = "";
+let nameTime = 35;
+let nameShelf = [];
+let nameObjects = [];
+let yeeahs = [];
+
+let audioReady = false;
+let audioCtx = null;
+let musicOn = false;
+let musicTimer = null;
+let activeBgmKey = null;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * DPR;
+  canvas.height = H * DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  toilet.x = W / 2 - toilet.w / 2;
+  toilet.y = H - 225;
+  updateToiletPos();
+}
+window.addEventListener("resize", resize);
+
+function updateToiletPos() {
+  toilet.drainX = toilet.x + toilet.w / 2;
+  toilet.drainY = toilet.y + toilet.h * 0.55;
+}
+
+function rand(min, max) { return Math.random() * (max - min) + min; }
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+function dist(x1, y1, x2, y2) { return Math.hypot(x1 - x2, y1 - y2); }
+function spawnInterval() { return Math.max(0.65, 2 - score / 900); }
+
+function angleDiff(target, current) {
+  let d = target - current;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function chooseWeighted(list) {
+  const total = list.reduce((s, o) => s + o.rarity, 0);
+  let r = Math.random() * total;
+  for (const o of list) {
+    r -= o.rarity;
+    if (r <= 0) return o;
+  }
+  return list[0];
+}
+
+function initAudio() {
+  audioUnlocked = true;
+
+  if (!audioReady) {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (AudioContext) {
+      audioCtx = new AudioContext();
+      audioReady = true;
+    }
+  }
+
+  if (audioCtx && audioCtx.state === "suspended") {
+    audioCtx.resume().catch(() => {});
+  }
+}
+
+function tone(freq, dur, type = "sine", gain = 0.05, slideTo = null) {
+  if (!audioReady || !audioCtx) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, now);
+  if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, now + dur);
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(gain, now + 0.015);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  osc.connect(g);
+  g.connect(audioCtx.destination);
+  osc.start(now);
+  osc.stop(now + dur + 0.02);
+}
+
+function noise(dur = 0.15, gain = 0.05) {
+  if (!audioReady || !audioCtx) return;
+  const size = Math.floor(audioCtx.sampleRate * dur);
+  const buffer = audioCtx.createBuffer(1, size, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < size; i++) data[i] = Math.random() * 2 - 1;
+  const src = audioCtx.createBufferSource();
+  const g = audioCtx.createGain();
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.value = 900;
+  g.gain.setValueAtTime(gain, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + dur);
+  src.buffer = buffer;
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(audioCtx.destination);
+  src.start();
+  src.stop(audioCtx.currentTime + dur);
+}
+
+function fallbackSfx(name) {
+  if (!audioReady) return;
+  if (name === "spawn") tone(330, 0.08, "triangle", 0.025, 420);
+  if (name === "grab") tone(520, 0.06, "square", 0.025, 390);
+  if (name === "compress") tone(180, 0.12, "sawtooth", 0.035, 120);
+  if (name === "enter") { tone(620, 0.08, "triangle", 0.045, 820); noise(0.09, 0.025); }
+  if (name === "flush") { noise(0.32, 0.075); tone(220, 0.22, "sine", 0.035, 90); }
+  if (name === "clog") { tone(100, 0.22, "sawtooth", 0.055, 70); noise(0.18, 0.045); }
+  if (name === "miss") tone(170, 0.18, "sine", 0.04, 110);
+  if (name === "combo") { tone(660, 0.08, "triangle", 0.045, 880); setTimeout(() => tone(990, 0.1, "triangle", 0.04, 1320), 70); }
+  if (name === "rare") { tone(880, 0.1, "triangle", 0.055, 1320); setTimeout(() => tone(1175, 0.12, "triangle", 0.05, 1760), 80); }
+}
+
+function playSfx(name) {
+  if (!audioUnlocked) return;
+
+  // 효과음만 파일이 없을 때 기본 생성 효과음으로 대체합니다.
+  // bgm / resultBgm은 여기서 처리하지 않습니다.
+  if (name === "bgm" || name === "resultBgm") return;
+
+  const s = sounds[name];
+  if (s) {
+    try {
+      const a = s.cloneNode(true);
+      a.volume = s.volume;
+      a.play().catch(() => fallbackSfx(name));
+      return;
+    } catch {}
+  }
+  fallbackSfx(name);
+}
+
+function stopAllBgm() {
+  stopGeneratedMusic();
+  for (const key of ["bgm", "resultBgm"]) {
+    const audio = sounds[key];
+    if (audio) {
+      audio.pause();
+      audio.currentTime = 0;
+    }
+  }
+  activeBgmKey = null;
+}
+
+function playBgm(key) {
+  if (!musicOn) return;
+  initAudio();
+
+  const audio = sounds[key];
+  stopAllBgm();
+  activeBgmKey = key;
+
+  if (!audio) {
+    console.log("BGM 파일 없음:", key, audioFiles[key]);
+    return;
+  }
+
+  audio.loop = true;
+  audio.volume = 0.38;
+  audio.currentTime = 0;
+
+  const result = audio.play();
+  if (result && result.then) {
+    result
+      .then(() => console.log("BGM 재생 성공:", audioFiles[key]))
+      .catch(err => console.log("BGM 재생 실패:", audioFiles[key], err));
+  }
+}
+
+function toggleMusic() {
+  initAudio();
+  musicOn = !musicOn;
+  musicBtn.textContent = musicOn ? "음악 ON" : "음악 OFF";
+
+  if (!musicOn) {
+    stopAllBgm();
+    return;
+  }
+
+  if (mode === "name" || mode === "result") playBgm("resultBgm");
+  else playBgm("bgm");
+}
+
+function startGeneratedMusic() {
+  // 음악 파일이 없을 때 자동 기본 BGM을 틀지 않도록 비워둡니다.
+  // 기본 대체음은 효과음에만 적용됩니다.
+}
+
+function stopGeneratedMusic() {
+  if (musicTimer) clearInterval(musicTimer);
+  musicTimer = null;
+}
+
+function makeObj(type, x, y, vx, vy) {
+  return {
+    type,
+    x, y, vx, vy,
+    angle: rand(-0.15, 0.15),
+    av: rand(-0.12, 0.12),
+    w: type.w,
+    h: type.h,
+    mass: type.mass,
+    scale: 1,
+    grab: null,
+    inToilet: false,
+    enteredScreen: false,
+    birthTime: 0,
+    trickTimer: 0,
+    isYeeah: type.isYeeah || false,
+    noPhysics: type.noPhysics || false
+  };
+}
+
+function spawnObject() {
+  const t = chooseWeighted(objectTypes);
+  const fromLeft = Math.random() < 0.5;
+  const x = fromLeft ? -180 : W + 180;
+  const y = rand(120, Math.max(170, H * 0.48));
+  const targetX = W * rand(0.35, 0.65);
+  const targetY = H * rand(0.25, 0.52);
+  const dx = targetX - x;
+  const dy = targetY - y;
+  const len = Math.max(1, Math.hypot(dx, dy));
+  const speed = rand(110, 145);
+  const vx = (dx / len) * speed;
+  const vy = (dy / len) * speed * 0.55;
+  objects.push(makeObj(t, x, y, vx, vy));
+  playSfx("spawn");
+}
+
+function spawnYeeahBurst() {
+  addText(W / 2, H * 0.28, "지예아!!", "#f0abfc", 2.2, 42);
+
+  for (let i = 0; i < 10; i++) {
+    // 화면 중앙 근처에서 확실히 보이게 생성한 뒤, 별똥별처럼 한 방향으로 이동합니다.
+    const fromLeft = Math.random() < 0.5;
+    const x = W / 2 + rand(-160, 160);
+    const y = H * 0.25 + rand(-80, 160);
+    const vx = fromLeft ? rand(170, 260) : -rand(170, 260);
+    const vy = rand(-60, 60);
+    const type = {
+      name: "지예아!!",
+      w: 92,
+      h: 34,
+      mass: 0.9,
+      points: 17,
+      color: "#ffffff",
+      rarity: 0,
+      difficulty: 1,
+      isYeeah: true,
+      noPhysics: true
+    };
+    const o = makeObj(type, x, y, vx, vy);
+    o.enteredScreen = true;
+    yeeahs.push(o);
+  }
+}
+
+function localToWorld(o, lx, ly) {
+  const c = Math.cos(o.angle);
+  const s = Math.sin(o.angle);
+  return {
+    x: o.x + (lx * c - ly * s) * o.scale,
+    y: o.y + (lx * s + ly * c) * o.scale
+  };
+}
+
+function worldToLocal(o, x, y) {
+  const dx = x - o.x;
+  const dy = y - o.y;
+  const c = Math.cos(-o.angle);
+  const s = Math.sin(-o.angle);
+  return {
+    x: (dx * c - dy * s) / o.scale,
+    y: (dx * s + dy * c) / o.scale
+  };
+}
+
+function isInsideObject(o, x, y) {
+  const p = worldToLocal(o, x, y);
+  return Math.abs(p.x) <= o.w / 2 && Math.abs(p.y) <= o.h / 2;
+}
+
+function startGrab(o, x, y, id) {
+  const p = worldToLocal(o, x, y);
+  pointer = { id, x, y, obj: o };
+  o.grab = {
+    lx: p.x,
+    ly: p.y,
+    targetX: x,
+    targetY: y,
+    startAngle: o.angle
+  };
+  o.noPhysics = false;
+  o.vx *= 0.35;
+  o.vy *= 0.35;
+  o.av *= 0.12;
+}
+
+function releaseGrab() {
+  if (pointer && pointer.obj) pointer.obj.grab = null;
+  pointer = null;
+}
+
+function compressGrabbed() {
+  if (!pointer || !pointer.obj || !pointer.obj.grab) return;
+  const o = pointer.obj;
+  if (o.scale > 0.42) {
+    o.scale *= 0.86;
+    o.vy -= 15;
+    o.av += rand(-0.25, 0.25);
+    playSfx("compress");
+    addText(o.x, o.y - 35, "꾸욱", "#a7f3d0", 1, 18);
+  }
+}
+
+function addText(x, y, text, color = "white", life = 1, size = 18) {
+  particles.push({ x, y, vx: rand(-20, 20), vy: rand(-55, -25), life, maxLife: life, text, color, size });
+}
+
+function addSplash(x, y, count = 10) {
+  for (let i = 0; i < count; i++) {
+    particles.push({ x, y, vx: rand(-120, 120), vy: rand(-160, -40), life: rand(0.35, 0.8), maxLife: 0.8, r: rand(2, 5), color: "#bde0fe" });
+  }
+}
+
+function canEnterToilet(o) {
+  const maxSize = Math.max(o.w, o.h) * o.scale;
+  const allowed = 98 - o.type.difficulty * 5;
+  return maxSize < allowed || o.scale < 0.58;
+}
+
+function tryEnterToilet(o, nameMode = false) {
+  if (o.inToilet || o.grab) return false;
+  const touch = dist(o.x, o.y, toilet.drainX, toilet.drainY) < toilet.inletR + Math.max(o.w, o.h) * o.scale * 0.23;
+  if (!touch) return false;
+
+  if (!nameMode && !canEnterToilet(o)) {
+    addText(o.x, o.y - 30, "입구에 걸림!", "#fca5a5");
+    o.vx += rand(-70, 70);
+    o.vy -= rand(50, 100);
+    o.av += rand(-1, 1);
+    return false;
+  }
+
+  o.inToilet = true;
+  o.x = toilet.drainX + rand(-16, 16);
+  o.y = toilet.drainY + rand(-10, 12);
+  o.vx = 0;
+  o.vy = 0;
+  o.av = 0;
+  o.angle *= 0.4;
+  playSfx("enter");
+  addSplash(toilet.drainX, toilet.drainY, nameMode ? 7 : 12);
+
+  if (nameMode) {
+    nameInput += o.type.name;
+    return true;
+  }
+
+  discovered[o.type.name] = true;
+  localStorage.setItem(DISCOVER_KEY, JSON.stringify(discovered));
+
+  toilet.stored.push(o);
+  addText(toilet.drainX, toilet.drainY - 45, `${toilet.stored.length}개 대기`, "#e0f2fe", 1, 18);
+  return true;
+}
+
+function flushToilet() {
+  initAudio();
+
+  if (toilet.stored.length === 0) {
+    addText(toilet.drainX, toilet.drainY - 45, "먼저 넣어!", "#fef08a", 0.9, 18);
+    return;
+  }
+
+  const count = toilet.stored.length;
+  const extra = Math.max(0, count - 3);
+  const risk = clamp(extra * 0.18 + toilet.stored.reduce((s, o) => s + o.type.difficulty, 0) * 0.012, 0, 0.82);
+  const rareCount = toilet.stored.filter(o => Boolean(o.type.rare)).length;
+  toilet.flushPulse = 1;
+
+  // 레어가 포함되어 있으면 막히든 성공하든 일단 연출은 확실히 발생합니다.
+  if (rareCount > 0) {
+    spawnYeeahBurst();
+    playSfx("rare");
+    comboGlow = Math.max(comboGlow, 2.2);
+  }
+
+  if (Math.random() < risk) {
+    playSfx("clog");
+    combo = 0;
+    time -= 5 + extra * 2;
+    toilet.cloggedFlash = 1;
+    addText(toilet.drainX, toilet.drainY - 70, `막힘! 확률 ${Math.round(risk * 100)}%`, "#fb7185", 1.4, 22);
+    addSplash(toilet.drainX, toilet.drainY, 28);
+    toilet.stored = toilet.stored.slice(0, Math.max(0, Math.floor(count / 2)));
+    return;
+  }
+
+  let gained = 0;
+  for (const o of toilet.stored) gained += o.type.points;
+  gained = Math.floor(gained * (1 + combo * 0.13) * (1 + Math.max(0, count - 1) * 0.08));
+
+  score += gained;
+
+  if (rareCount > 0) {
+    const rareTimeBonus = rareCount * 4;
+    const rareScoreBonus = rareCount * 80;
+    time += rareTimeBonus;
+    score += rareScoreBonus;
+    addText(toilet.drainX, toilet.drainY - 122, `RARE! +${rareTimeBonus}초 +${rareScoreBonus}`, "#f0abfc", 1.5, 24);
+  }
+
+  combo += count;
+
+  if (combo >= 3) {
+    const bonus = combo === 3 ? 3 : count;
+    time += bonus;
+    addText(toilet.drainX, toilet.drainY - 88, `콤보 시간 +${bonus}`, "#86efac", 1.1, 20);
+  }
+
+  playSfx("flush");
+  playSfx("combo");
+  comboBanner = 1.25;
+  comboGlow = 1.5;
+  addText(toilet.drainX, toilet.drainY - 55, `FLUSH +${gained}`, "#fef08a", 1.2, 22);
+  addSplash(toilet.drainX, toilet.drainY, 22 + count * 4);
+  toilet.stored = [];
+}
+
+function updatePhysics(o, dt, gravityBase = 230) {
+  o.birthTime += dt;
+  o.trickTimer += dt;
+
+  let gravity = gravityBase;
+  if (mode === "game" && !o.enteredScreen) gravity = 18;
+
+  if (o.type.trick === "spin" && !o.grab) o.av += Math.sin(o.trickTimer * 5) * dt * 1.2;
+  if (o.type.trick === "slip" && o.grab) o.grab.lx += Math.sin(o.trickTimer * 9) * dt * 7;
+  if (o.type.trick === "inflate" && !o.grab) o.scale = Math.min(1.12, o.scale + dt * 0.04);
+
+  if (o.grab) {
+    const anchor = localToWorld(o, o.grab.lx, o.grab.ly);
+    let tx = o.grab.targetX;
+    let ty = o.grab.targetY;
+
+    const wallR = toilet.wallR + Math.max(o.w, o.h) * o.scale * 0.28;
+
+    const dTarget = dist(tx, ty, toilet.drainX, toilet.drainY);
+    if (dTarget < wallR) {
+      const a = Math.atan2(ty - toilet.drainY, tx - toilet.drainX);
+      tx = toilet.drainX + Math.cos(a) * wallR;
+      ty = toilet.drainY + Math.sin(a) * wallR;
+      o.grab.targetX = tx;
+      o.grab.targetY = ty;
+    }
+
+    const dObj = dist(o.x, o.y, toilet.drainX, toilet.drainY);
+    if (dObj < wallR) {
+      const a = Math.atan2(o.y - toilet.drainY, o.x - toilet.drainX);
+      o.x = toilet.drainX + Math.cos(a) * wallR;
+      o.y = toilet.drainY + Math.sin(a) * wallR;
+      const nx = Math.cos(a);
+      const ny = Math.sin(a);
+      const inward = o.vx * -nx + o.vy * -ny;
+      if (inward > 0) {
+        o.vx += nx * inward * 1.25;
+        o.vy += ny * inward * 1.25;
+      }
+    }
+
+    const ex = tx - anchor.x;
+    const ey = ty - anchor.y;
+    const distance = Math.hypot(ex, ey);
+    const spring = 22 / o.mass;
+    const damping = 13 / o.mass;
+
+    o.vx += ex * spring * dt;
+    o.vy += ey * spring * dt;
+
+    const rawTorque = (o.grab.lx * ey - o.grab.ly * ex) * 0.0015 / o.mass;
+    const limitedTorque = clamp(rawTorque, -0.2, 0.2);
+    const stabilize = angleDiff(o.grab.startAngle, o.angle) * 3.1;
+    const angularDamping = o.av * 7.5;
+    o.av += (limitedTorque + stabilize - angularDamping) * dt;
+
+    if (distance > 75) {
+      o.vx *= Math.pow(0.62, dt * damping);
+      o.vy *= Math.pow(0.62, dt * damping);
+      o.av *= Math.pow(0.35, dt * 60);
+    } else {
+      o.vx *= Math.pow(0.74, dt * damping);
+      o.vy *= Math.pow(0.74, dt * damping);
+      o.av *= Math.pow(0.55, dt * 60);
+    }
+  } else if (!o.inToilet) {
+    o.vy += gravity * dt;
+    o.av *= Math.pow(0.965, dt * 60);
+  }
+
+  if (!o.inToilet) {
+    const air = Math.pow(0.992, dt * 60);
+    o.vx *= air;
+    o.vy *= air;
+    o.av = clamp(o.av, -3.2, 3.2);
+    o.x += o.vx * dt;
+    o.y += o.vy * dt;
+    o.angle += o.av * dt;
+  }
+}
+
+function isFullyOutside(o) {
+  const margin = Math.max(o.w, o.h) * o.scale + 120;
+  return o.x < -margin || o.x > W + margin || o.y < -margin || o.y > H + margin;
+}
+
+function updateParticles(dt) {
+  for (const p of particles) {
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 120 * dt;
+    p.life -= dt;
+  }
+  particles = particles.filter(p => p.life > 0);
+}
+
+function updateGame(dt) {
+  time -= dt;
+  spawnCooldown -= dt;
+  comboBanner = Math.max(0, comboBanner - dt);
+  comboGlow = Math.max(0, comboGlow - dt);
+  toilet.cloggedFlash = Math.max(0, toilet.cloggedFlash - dt * 2.5);
+
+  if (spawnCooldown <= 0) {
+    spawnObject();
+    spawnCooldown = spawnInterval();
+  }
+
+  for (let i = objects.length - 1; i >= 0; i--) {
+    const o = objects[i];
+
+    if (!o.enteredScreen && o.birthTime > 4.5) {
+      objects.splice(i, 1);
+      continue;
+    }
+
+    updatePhysics(o, dt);
+
+    if (!o.enteredScreen) {
+      const insideNow = o.birthTime > 0.12 && o.x > -20 && o.x < W + 20 && o.y > 60 && o.y < H - 70;
+      if (insideNow) o.enteredScreen = true;
+    }
+
+    if (tryEnterToilet(o, false)) {
+      objects.splice(i, 1);
+      continue;
+    }
+
+    if (o.enteredScreen && isFullyOutside(o)) {
+      // 지예아는 놓쳐도 패널티 없음
+      if (!o.isYeeah) {
+        playSfx("miss");
+        addText(W / 2, 120, "놓쳤다!", "#fca5a5", 1, 20);
+        combo = 0;
+        time -= o.type.rare ? 5 : 2;
+      }
+      objects.splice(i, 1);
+    }
+  }
+
+  for (let i = yeeahs.length - 1; i >= 0; i--) {
+    const y = yeeahs[i];
+
+    if (y.noPhysics && !y.grab) {
+      y.birthTime += dt;
+      y.x += y.vx * dt;
+      y.y += y.vy * dt;
+      y.angle += 0.8 * dt;
+    } else {
+      updatePhysics(y, dt, 190);
+    }
+
+    if (tryEnterToilet(y, false)) {
+      yeeahs.splice(i, 1);
+      continue;
+    }
+
+    if (isFullyOutside(y)) yeeahs.splice(i, 1);
+  }
+
+  updateParticles(dt);
+
+  if (time <= 0) endGame();
+
+  ui.score.textContent = score;
+  ui.time.textContent = Math.max(0, Math.ceil(time));
+  ui.combo.textContent = combo;
+  ui.interval.textContent = spawnInterval().toFixed(2);
+  ui.stored.textContent = toilet.stored.length;
+  ui.best.textContent = localStorage.getItem(BEST_KEY) || 0;
+}
+
+function getRankings() {
+  try { return JSON.parse(localStorage.getItem(RANK_KEY) || "[]"); }
+  catch { return []; }
+}
+
+function saveRanking(name) {
+  const rankings = getRankings();
+  rankings.push({ name: name || "무명", score: gameOverScore, date: new Date().toLocaleDateString() });
+  rankings.sort((a, b) => b.score - a.score);
+  localStorage.setItem(RANK_KEY, JSON.stringify(rankings.slice(0, 5)));
+}
+
+function endGame() {
+  gameOverScore = score;
+  localStorage.setItem(BEST_KEY, String(Math.max(Number(localStorage.getItem(BEST_KEY) || 0), score)));
+  const rankings = getRankings();
+  const qualifies = rankings.length < 5 || score > rankings[rankings.length - 1].score;
+  releaseGrab();
+  objects = [];
+  yeeahs = [];
+  toilet.stored = [];
+  if (qualifies) {
+    startNameMode();
+  } else {
+    mode = "result";
+    playBgm("resultBgm");
+  }
+}
+
+function startNameMode() {
+  mode = "name";
+  playBgm("resultBgm");
+  nameInput = "";
+  nameTime = 35;
+  nameObjects = [];
+  particles = [];
+  buildNameShelf();
+}
+
+function buildNameShelf() {
+  nameShelf = [];
+  const chars = shuffle(nameLetters);
+  const cols = 9;
+  const gap = 10;
+  const size = Math.min(48, (W - 40) / cols - gap);
+  const startX = (W - (cols * size + (cols - 1) * gap)) / 2;
+  const startY = 105;
+  for (let i = 0; i < chars.length; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    nameShelf.push({ ch: chars[i], x: startX + col * (size + gap), y: startY + row * (size + gap), size });
+  }
+}
+
+function spawnNameObj(ch, x, y) {
+  const type = { name: ch, w: 42, h: 42, mass: 0.8, points: 0, color: "#e0f2fe", rarity: 1, difficulty: 0 };
+  const o = makeObj(type, x, y, 0, 0);
+  o.enteredScreen = true;
+  nameObjects.push(o);
+  return o;
+}
+
+function updateName(dt) {
+  nameTime -= dt;
+
+  for (let i = nameObjects.length - 1; i >= 0; i--) {
+    const o = nameObjects[i];
+    updatePhysics(o, dt, 230);
+
+    if (tryEnterToilet(o, true)) {
+      nameObjects.splice(i, 1);
+      continue;
+    }
+
+    if (isFullyOutside(o)) {
+      nameTime -= 2;
+      addText(W / 2, 120, "글자 떨어짐 -2초", "#fca5a5", 1, 18);
+      playSfx("miss");
+      nameObjects.splice(i, 1);
+    }
+  }
+
+  updateParticles(dt);
+  if (nameTime <= 0) finishName();
+}
+
+function finishName() {
+  saveRanking(nameInput);
+  mode = "result";
+  playBgm("resultBgm");
+  releaseGrab();
+}
+
+function restart() {
+  score = 0;
+  time = 90;
+  combo = 0;
+  spawnCooldown = 0;
+  comboBanner = 0;
+  comboGlow = 0;
+  objects = [];
+  yeeahs = [];
+  toilet.stored = [];
+  particles = [];
+  encyclopediaOpen = false;
+  try {
+    discovered = JSON.parse(localStorage.getItem(DISCOVER_KEY) || "{}");
+  } catch {
+    discovered = {};
+  }
+  mode = "game";
+  playBgm("bgm");
+  releaseGrab();
+}
+
+function roundRect(x, y, w, h, r, fill) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  if (fill) ctx.fill();
+  else ctx.stroke();
+}
+
+function drawToilet() {
+  updateToiletPos();
+
+  if (pointer && pointer.obj && pointer.obj.grab) {
+    ctx.save();
+    ctx.strokeStyle = "rgba(248,113,113,0.5)";
+    ctx.lineWidth = 4;
+    ctx.setLineDash([8, 8]);
+    ctx.beginPath();
+    ctx.arc(toilet.drainX, toilet.drainY, toilet.wallR, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  ctx.save();
+  ctx.translate(toilet.x, toilet.y);
+  ctx.fillStyle = toilet.cloggedFlash > 0 ? "#fecaca" : "#f8fafc";
+  roundRect(12, 20, toilet.w - 24, toilet.h - 20, 24, true);
+
+  ctx.fillStyle = "#dbeafe";
+  ctx.beginPath();
+  ctx.ellipse(toilet.w / 2, toilet.h * 0.55, 45 + toilet.flushPulse * 14, 28 + toilet.flushPulse * 7, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#93c5fd";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.fillStyle = "#e5e7eb";
+  roundRect(22, 0, toilet.w - 44, 37, 12, true);
+  ctx.fillStyle = "#1f2937";
+  ctx.font = "bold 14px system-ui";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("FLUSH", toilet.w / 2, 20);
+
+  if (toilet.stored.length > 0) {
+    ctx.fillStyle = "#111827";
+    ctx.font = "bold 15px system-ui";
+    ctx.fillText(String(toilet.stored.length), toilet.w / 2, toilet.h * 0.62);
+  }
+  ctx.restore();
+
+  toilet.flushPulse = Math.max(0, toilet.flushPulse - 0.05);
+}
+
+function drawObject(o) {
+  ctx.save();
+  ctx.translate(o.x, o.y);
+  ctx.rotate(o.angle);
+  ctx.scale(o.scale, o.scale);
+
+  if (o.type.rare || o.isYeeah) {
+    const hue = (performance.now() * 0.12 + o.x + o.y) % 360;
+    ctx.fillStyle = o.isYeeah ? `hsl(${hue}, 95%, 70%)` : o.type.color;
+    ctx.strokeStyle = `hsl(${hue}, 100%, 65%)`;
+  } else {
+    ctx.fillStyle = o.type.color;
+    ctx.strokeStyle = "rgba(255,255,255,0.55)";
+  }
+
+  ctx.lineWidth = o.type.rare || o.isYeeah ? 4 : 2;
+  roundRect(-o.w / 2, -o.h / 2, o.w, o.h, 12, true);
+  roundRect(-o.w / 2, -o.h / 2, o.w, o.h, 12, false);
+  ctx.fillStyle = o.type.name === "피아노" || o.type.name === "리모컨" ? "white" : "#111827";
+  ctx.font = `bold ${Math.max(13, Math.min(18, o.w / 6))}px system-ui`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(o.type.name, 0, 0);
+  ctx.restore();
+
+  if (o.grab) {
+    const a = localToWorld(o, o.grab.lx, o.grab.ly);
+    ctx.save();
+    ctx.strokeStyle = "rgba(167,243,208,0.7)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(o.grab.targetX, o.grab.targetY);
+    ctx.stroke();
+    ctx.fillStyle = "#34d399";
+    ctx.beginPath();
+    ctx.arc(a.x, a.y, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, p.life / (p.maxLife || 1));
+    if (p.text) {
+      ctx.fillStyle = p.color;
+      ctx.font = `bold ${p.size || 18}px system-ui`;
+      ctx.textAlign = "center";
+      ctx.fillText(p.text, p.x, p.y);
+    } else {
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+function drawFrameGlow() {
+  if (comboGlow <= 0) return;
+  ctx.save();
+  const a = Math.min(0.55, comboGlow * 0.35);
+  ctx.strokeStyle = `rgba(134,239,172,${a})`;
+  ctx.lineWidth = 10 + Math.sin(performance.now() * 0.012) * 3;
+  ctx.strokeRect(5, 5, W - 10, H - 10);
+  ctx.restore();
+}
+
+function drawComboBanner() {
+  if (comboBanner <= 0 || combo <= 0) return;
+  ctx.save();
+  const scale = 1 + Math.sin(performance.now() * 0.018) * 0.08;
+  ctx.translate(W - 118, 115);
+  ctx.scale(scale, scale);
+  ctx.fillStyle = "rgba(0,0,0,0.45)";
+  roundRect(-84, -32, 168, 64, 18, true);
+  ctx.fillStyle = "#86efac";
+  ctx.font = "bold 28px system-ui";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(`${combo} COMBO!`, 0, 0);
+  ctx.restore();
+}
+
+function drawBookButton() {
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  roundRect(10, H - 58, 86, 42, 14, true);
+  ctx.fillStyle = "white";
+  ctx.font = "bold 16px system-ui";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("도감", 53, H - 37);
+  ctx.restore();
+}
+
+function drawEncyclopedia() {
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,0.84)";
+  roundRect(18, 70, W - 36, H - 150, 20, true);
+  ctx.fillStyle = "white";
+  ctx.font = "bold 22px system-ui";
+  ctx.textAlign = "center";
+  ctx.fillText("오브젝트 도감", W / 2, 105);
+
+  ctx.font = "14px system-ui";
+  ctx.textAlign = "left";
+  const startX = 42;
+  let y = 140;
+  for (const t of objectTypes) {
+    const seen = discovered[t.name];
+    const rareMark = t.rare ? " ★" : "";
+    ctx.fillStyle = seen ? "white" : "#6b7280";
+    ctx.fillText(seen ? `${t.name}${rareMark} / 점수 ${t.points} / 난이도 ${t.difficulty}` : "???", startX, y);
+    y += 24;
+    if (y > H - 115) break;
+  }
+
+  ctx.fillStyle = "#d1d5db";
+  ctx.textAlign = "center";
+  ctx.fillText("도감 버튼을 다시 누르면 닫힙니다", W / 2, H - 95);
+  ctx.restore();
+}
+
+function drawGame() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "rgba(255,255,255,0.06)";
+  for (let i = 0; i < 18; i++) ctx.fillRect((i * 67 + performance.now() * 0.02) % W, 64 + (i % 5) * 80, 2, 24);
+  drawToilet();
+  for (const o of toilet.stored) drawObject(o);
+  for (const o of objects) drawObject(o);
+  for (const o of yeeahs) drawObject(o);
+  drawParticles();
+  drawComboBanner();
+  drawFrameGlow();
+  drawBookButton();
+  if (encyclopediaOpen) drawEncyclopedia();
+}
+
+function drawNameMode() {
+  ctx.clearRect(0, 0, W, H);
+  drawToilet();
+
+  ctx.fillStyle = "white";
+  ctx.textAlign = "center";
+  ctx.font = "bold 20px system-ui";
+  ctx.fillText("신기록! 영어 대문자를 변기에 넣어 이름 만들기", W / 2, 55);
+  ctx.font = "16px system-ui";
+  ctx.fillText(`이름: ${nameInput || "_"}   남은 시간: ${Math.ceil(nameTime)}`, W / 2, 82);
+
+  for (const l of nameShelf) {
+    ctx.fillStyle = "#dbeafe";
+    roundRect(l.x, l.y, l.size, l.size, 10, true);
+    ctx.fillStyle = "#111827";
+    ctx.font = `bold ${l.size * 0.48}px system-ui`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(l.ch, l.x + l.size / 2, l.y + l.size / 2);
+  }
+
+  for (const o of nameObjects) drawObject(o);
+
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  roundRect(W / 2 - 90, H - 62, 180, 42, 16, true);
+  ctx.fillStyle = "white";
+  ctx.font = "bold 17px system-ui";
+  ctx.textAlign = "center";
+  ctx.fillText("완료", W / 2, H - 41);
+  drawParticles();
+}
+
+function drawResult() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "white";
+  ctx.textAlign = "center";
+  ctx.font = "bold 32px system-ui";
+  ctx.fillText("게임 종료", W / 2, 95);
+  ctx.font = "bold 22px system-ui";
+  ctx.fillText(`점수: ${gameOverScore}`, W / 2, 135);
+
+  const rankings = getRankings();
+  ctx.font = "bold 20px system-ui";
+  ctx.fillText("로컬 순위", W / 2, 190);
+  ctx.font = "16px system-ui";
+  if (rankings.length === 0) ctx.fillText("아직 기록 없음", W / 2, 225);
+  rankings.forEach((r, i) => ctx.fillText(`${i + 1}. ${r.name} - ${r.score}`, W / 2, 225 + i * 30));
+
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  roundRect(W / 2 - 105, H - 100, 210, 52, 18, true);
+  ctx.fillStyle = "white";
+  ctx.font = "bold 18px system-ui";
+  ctx.fillText("다시 하기", W / 2, H - 68);
+}
+
+function update(dt) {
+  if (mode === "game") updateGame(dt);
+  else if (mode === "name") updateName(dt);
+  else updateParticles(dt);
+}
+
+function draw() {
+  if (mode === "game") drawGame();
+  else if (mode === "name") drawNameMode();
+  else drawResult();
+}
+
+function loop(now) {
+  const dt = Math.min(0.033, (now - lastT) / 1000);
+  lastT = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function getPoint(e) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+function hitFlushButton(p) {
+  return p.x >= toilet.x + 22 && p.x <= toilet.x + toilet.w - 22 && p.y >= toilet.y && p.y <= toilet.y + 37;
+}
+
+canvas.addEventListener("pointerdown", e => {
+  e.preventDefault();
+  initAudio();
+  const p = getPoint(e);
+
+  if (mode === "game") {
+    if (p.x >= 10 && p.x <= 96 && p.y >= H - 58 && p.y <= H - 16) {
+      try {
+        discovered = JSON.parse(localStorage.getItem(DISCOVER_KEY) || "{}");
+      } catch {
+        discovered = {};
+      }
+      encyclopediaOpen = !encyclopediaOpen;
+      return;
+    }
+
+    if (hitFlushButton(p)) {
+      flushToilet();
+      return;
+    }
+
+    if (pointer && pointer.obj && pointer.obj.grab) {
+      compressGrabbed();
+      return;
+    }
+
+    for (let i = yeeahs.length - 1; i >= 0; i--) {
+      if (isInsideObject(yeeahs[i], p.x, p.y)) {
+        playSfx("grab");
+        startGrab(yeeahs[i], p.x, p.y, e.pointerId);
+        return;
+      }
+    }
+
+    for (let i = objects.length - 1; i >= 0; i--) {
+      if (isInsideObject(objects[i], p.x, p.y)) {
+        playSfx("grab");
+        startGrab(objects[i], p.x, p.y, e.pointerId);
+        return;
+      }
+    }
+  } else if (mode === "name") {
+    if (p.x > W / 2 - 90 && p.x < W / 2 + 90 && p.y > H - 62 && p.y < H - 20) {
+      finishName();
+      return;
+    }
+
+    if (pointer && pointer.obj && pointer.obj.grab) {
+      releaseGrab();
+      return;
+    }
+
+    for (let i = nameObjects.length - 1; i >= 0; i--) {
+      if (isInsideObject(nameObjects[i], p.x, p.y)) {
+        startGrab(nameObjects[i], p.x, p.y, e.pointerId);
+        return;
+      }
+    }
+
+    const shelf = nameShelf.find(l => p.x >= l.x && p.x <= l.x + l.size && p.y >= l.y && p.y <= l.y + l.size);
+    if (shelf) {
+      const o = spawnNameObj(shelf.ch, shelf.x + shelf.size / 2, shelf.y + shelf.size / 2);
+      startGrab(o, p.x, p.y, e.pointerId);
+    }
+  } else if (mode === "result") {
+    if (p.x > W / 2 - 105 && p.x < W / 2 + 105 && p.y > H - 100 && p.y < H - 48) restart();
+  }
+});
+
+canvas.addEventListener("pointermove", e => {
+  e.preventDefault();
+  if (!pointer || e.pointerId !== pointer.id || !pointer.obj || !pointer.obj.grab) return;
+  const p = getPoint(e);
+  const dx = p.x - pointer.x;
+  const dy = p.y - pointer.y;
+  pointer.x = p.x;
+  pointer.y = p.y;
+  pointer.obj.grab.targetX = p.x;
+  pointer.obj.grab.targetY = p.y;
+  pointer.obj.vx += dx * 0.22;
+  pointer.obj.vy += dy * 0.22;
+});
+
+canvas.addEventListener("pointerup", e => {
+  e.preventDefault();
+  if (pointer && e.pointerId === pointer.id) releaseGrab();
+});
+
+canvas.addEventListener("pointercancel", () => releaseGrab());
+
+window.addEventListener("keydown", e => {
+  if (e.key === " " && mode === "game") compressGrabbed();
+  if (e.key.toLowerCase() === "f" && mode === "game") flushToilet();
+  if (e.key.toLowerCase() === "m") toggleMusic();
+  if (e.key === "Enter" && mode === "name") finishName();
+  if (e.key.toLowerCase() === "r" && mode === "result") restart();
+});
+
+musicBtn.addEventListener("pointerdown", e => {
+  e.preventDefault();
+  toggleMusic();
+});
+
+loadSounds();
+resize();
+restart();
+requestAnimationFrame(loop);
+</script></body>
+</html>
